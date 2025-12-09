@@ -1,0 +1,1 @@
+- you are the backup machine which is supposed to take backup from another local machine
