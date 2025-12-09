@@ -1,0 +1,193 @@
+# GuruColdStorage Backup System
+
+A pull-based backup system for the GuruColdStorage Supabase application. The backup machine initiates all connections to the primary server, providing enhanced security - even if the primary server is compromised, attackers cannot delete backups.
+
+## Architecture
+
+```
+┌─────────────────────┐         SSH/rsync          ┌─────────────────────┐
+│   BACKUP MACHINE    │ ◄──────────────────────── │   PRIMARY SERVER    │
+│  (192.168.0.130)    │        Pull backups        │  (172.16.194.128)   │
+│                     │                            │                     │
+│  /backup/           │                            │  PostgreSQL DB      │
+│  ├── database/      │                            │  File Storage       │
+│  ├── storage/       │                            │  Encrypted Secrets  │
+│  ├── secrets/       │                            │                     │
+│  └── logs/          │                            │                     │
+└─────────────────────┘                            └─────────────────────┘
+```
+
+## Components
+
+| Script | Purpose | Schedule |
+|--------|---------|----------|
+| `backup-orchestrator.sh` | Master script - runs all backups sequentially | Every 4 hours via cron |
+| `pull-database.sh` | PostgreSQL dump from primary server | Called by orchestrator |
+| `pull-storage.sh` | rsync file storage (GRN images, PDFs, documents) | Called by orchestrator |
+| `pull-secrets.sh` | rsync GPG-encrypted .env files | Called by orchestrator |
+| `decrypt-env.sh` | Helper script to decrypt secrets for recovery | Manual use |
+
+## Backup Details
+
+### Database Backup (`pull-database.sh`)
+- **Method**: Full PostgreSQL dump via SSH forced command
+- **Retention**: 28 days (~168 restore points at 6 backups/day)
+- **Compression**: gzip level 9 (maximum)
+- **Integrity Check**: Verifies "PostgreSQL database dump complete" marker
+- **Output**: `/backup/database/supabase_backup_YYYYMMDD_HHMMSS.sql.gz`
+
+### File Storage Backup (`pull-storage.sh`)
+- **Method**: rsync mirror with `--delete`
+- **Retention**: Latest snapshot only (no versioning)
+- **Content**: GRN images, PDFs, user-uploaded documents
+- **Output**: `/backup/storage/`
+
+### Secrets Backup (`pull-secrets.sh`)
+- **Method**: rsync with GPG filter (*.gpg files only)
+- **Retention**: 28 days
+- **Encryption**: GPG symmetric encryption
+- **Output**: `/backup/secrets/.env.YYYYMMDD_HHMMSS.gpg`
+
+## Cron Schedule
+
+```bash
+# Runs at: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00
+0 */4 * * * /home/abhinavguru/backup-scripts/backup-orchestrator.sh >> /backup/logs/cron.log 2>&1
+```
+
+## Directory Structure
+
+```
+/backup/
+├── database/          # PostgreSQL dumps (28-day retention)
+│   └── supabase_backup_YYYYMMDD_HHMMSS.sql.gz
+├── storage/           # File storage mirror (latest snapshot)
+│   └── [supabase storage buckets]
+├── secrets/           # GPG-encrypted .env files (28-day retention)
+│   └── .env.YYYYMMDD_HHMMSS.gpg
+└── logs/              # All operation logs
+    ├── cron.log
+    ├── orchestrator.log
+    ├── database-pull.log
+    ├── storage-pull.log
+    └── secrets-pull.log
+```
+
+## Security Features
+
+| Feature | Description |
+|---------|-------------|
+| **Pull-Based Architecture** | Backup machine initiates connections; primary cannot delete backups |
+| **SSH Forced Commands** | Primary server restricts SSH key to specific allowed operations |
+| **Read-Only Access** | Backup user has read-only ACLs on primary server |
+| **Lock File** | Prevents concurrent backup runs |
+| **Encrypted Secrets** | .env files encrypted with GPG before transfer |
+| **DR Team Isolation** | Separate restricted user for disaster recovery access |
+
+## Disaster Recovery
+
+### DR Team Access
+
+A restricted `drteam` user exists for disaster recovery:
+
+```bash
+# Connect to backup machine
+ssh -i ~/.ssh/dr_backup_key drteam@192.168.0.130
+
+# List database backups
+ssh -i ~/.ssh/dr_backup_key drteam@192.168.0.130 "ls -lh /backup/database/"
+
+# Download latest database backup
+scp -i ~/.ssh/dr_backup_key drteam@192.168.0.130:/backup/database/supabase_backup_YYYYMMDD_HHMMSS.sql.gz ./
+
+# Sync all storage files
+rsync -avz -e "ssh -i ~/.ssh/dr_backup_key" drteam@192.168.0.130:/backup/storage/ ./storage/
+```
+
+### Database Recovery
+
+```bash
+# Download and decompress
+scp drteam@192.168.0.130:/backup/database/supabase_backup_YYYYMMDD_HHMMSS.sql.gz ./
+gunzip supabase_backup_YYYYMMDD_HHMMSS.sql.gz
+
+# Restore to PostgreSQL
+psql -h localhost -U postgres -d supabase < supabase_backup_YYYYMMDD_HHMMSS.sql
+```
+
+### Secrets Recovery
+
+```bash
+# Decrypt on backup machine (passphrase stored locally)
+ssh drteam@192.168.0.130 "/home/abhinavguru/backup-scripts/decrypt-env.sh /backup/secrets/.env.YYYYMMDD_HHMMSS.gpg" > .env
+
+# Or decrypt locally (requires passphrase)
+gpg --decrypt .env.YYYYMMDD_HHMMSS.gpg > .env
+```
+
+## Monitoring
+
+### Check Backup Status
+
+```bash
+# View recent orchestrator activity
+tail -50 /backup/logs/orchestrator.log
+
+# Check last backup times
+ls -lt /backup/database/ | head -5
+ls -lt /backup/secrets/ | head -5
+
+# Check storage size
+du -sh /backup/storage/
+```
+
+### Log Files
+
+| Log | Contents |
+|-----|----------|
+| `/backup/logs/orchestrator.log` | Summary of all backup runs |
+| `/backup/logs/cron.log` | Full output from cron executions |
+| `/backup/logs/database-pull.log` | Database backup details |
+| `/backup/logs/storage-pull.log` | File sync details with rsync stats |
+| `/backup/logs/secrets-pull.log` | Secrets sync details |
+
+## Known Limitations
+
+1. **Storage has no version history** - Uses rsync `--delete`, so deleted files on primary are deleted from backup
+2. **No automated alerting** - Failures are logged but no email/webhook notifications
+3. **No disk space monitoring** - Backups may fail if disk fills up
+
+## SSH Configuration
+
+The backup machine uses this SSH config (`~/.ssh/config`):
+
+```
+Host primary-server
+    HostName 172.16.194.128
+    User backupuser
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking accept-new
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+```
+
+## Troubleshooting
+
+### Backup Failing with SSH Timeout
+- Check network connectivity: `ping 172.16.194.128`
+- Verify SSH service on primary: `ssh primary-server "echo test"`
+- Check firewall rules on primary server
+
+### Database Backup Empty or Incomplete
+- Check primary server disk space
+- Verify PostgreSQL is running on primary
+- Review `/backup/logs/database-pull.log` for errors
+
+### Lock File Blocking Backups
+```bash
+# Check if backup is actually running
+ps aux | grep backup-orchestrator
+
+# If not running, remove stale lock
+rm /tmp/backup-orchestrator.lock
+```
