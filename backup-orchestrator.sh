@@ -13,10 +13,21 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# Slack notification function
+notify_slack() {
+    local message="$1"
+    local status="${2:-info}"
+    "$SCRIPT_DIR/notify-slack.sh" "$message" "$status" || true
+}
+
+# Track failed components for alert
+FAILED_COMPONENTS=""
+
 # Acquire lock to prevent concurrent runs
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
     log "✗ ERROR: Another backup is already running (lock file: $LOCK_FILE)"
+    notify_slack "Backup skipped - another backup is already running" "warning"
     exit 1
 fi
 
@@ -36,6 +47,7 @@ if "$SCRIPT_DIR/pull-database.sh"; then
 else
     log "✗ Database backup: FAILED"
     ((FAIL_COUNT++)) || true
+    FAILED_COMPONENTS="${FAILED_COMPONENTS}Database, "
 fi
 
 # Run storage sync
@@ -46,6 +58,7 @@ if "$SCRIPT_DIR/pull-storage.sh"; then
 else
     log "✗ Storage sync: FAILED"
     ((FAIL_COUNT++)) || true
+    FAILED_COMPONENTS="${FAILED_COMPONENTS}Storage, "
 fi
 
 # Run secrets sync
@@ -56,6 +69,7 @@ if "$SCRIPT_DIR/pull-secrets.sh"; then
 else
     log "✗ Secrets sync: FAILED"
     ((FAIL_COUNT++)) || true
+    FAILED_COMPONENTS="${FAILED_COMPONENTS}Secrets, "
 fi
 
 # Summary
@@ -70,5 +84,8 @@ if [ $FAIL_COUNT -eq 0 ]; then
 else
     log "  Status: ✗ SOME BACKUPS FAILED"
     log "========================================="
+    # Remove trailing comma and space
+    FAILED_COMPONENTS="${FAILED_COMPONENTS%, }"
+    notify_slack "Backup FAILED!\n\n*Failed components:* ${FAILED_COMPONENTS}\n*Successful:* ${SUCCESS_COUNT}/3\n*Failed:* ${FAIL_COUNT}/3\n\nCheck logs: \`/backup/logs/orchestrator.log\`" "failure"
     exit 1
 fi
