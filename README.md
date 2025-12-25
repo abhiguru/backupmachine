@@ -11,7 +11,8 @@ A pull-based backup system for the GuruColdStorage Supabase application. The bac
 │                     │                            │                     │
 │  /backup/           │                            │  PostgreSQL DB      │
 │  ├── database/      │                            │  File Storage       │
-│  ├── storage/       │                            │  Encrypted Secrets  │
+│  ├── storage/       │                            │  Source Code        │
+│  ├── source/        │                            │  Encrypted Secrets  │
 │  ├── secrets/       │                            │                     │
 │  └── logs/          │                            │                     │
 └─────────────────────┘                            └─────────────────────┘
@@ -23,15 +24,17 @@ A pull-based backup system for the GuruColdStorage Supabase application. The bac
 |--------|---------|----------|
 | `backup-orchestrator.sh` | Master script - runs all backups sequentially | Every 4 hours via cron |
 | `pull-database.sh` | PostgreSQL dump from primary server | Called by orchestrator |
+| `pull-source.sh` | Backup source code from 3 projects as tar.gz | Called by orchestrator |
 | `pull-storage.sh` | rsync file storage (GRN images, PDFs, documents) | Called by orchestrator |
 | `pull-secrets.sh` | rsync GPG-encrypted .env files | Called by orchestrator |
+| `sync-to-secondary.sh` | Mirror backups to external drive | Called by orchestrator |
 | `decrypt-env.sh` | Helper script to decrypt secrets for recovery | Manual use |
 
 ## Backup Details
 
 ### Database Backup (`pull-database.sh`)
 - **Method**: Full PostgreSQL dump via SSH forced command
-- **Retention**: 28 days (~168 restore points at 6 backups/day)
+- **Retention**: 7 days (~42 restore points at 6 backups/day)
 - **Compression**: gzip level 9 (maximum)
 - **Integrity Check**: Verifies "PostgreSQL database dump complete" marker
 - **Output**: `/backup/database/supabase_backup_YYYYMMDD_HHMMSS.sql.gz`
@@ -42,11 +45,27 @@ A pull-based backup system for the GuruColdStorage Supabase application. The bac
 - **Content**: GRN images, PDFs, user-uploaded documents
 - **Output**: `/backup/storage/`
 
+### Source Code Backup (`pull-source.sh`)
+- **Method**: rsync to staging, then tar.gz archive
+- **Retention**: 7 days
+- **Projects**:
+  - `supabase` - GuruColdStorageSupabase
+  - `react-web` - GuruColdStorageReactWebSupabase
+  - `react-native` - GCSReactNative
+- **Excludes**: node_modules, .next, dist, build, .git, docker/volumes, android/.gradle, ios/Pods, .expo
+- **Output**: `/backup/source/{project}_backup_YYYYMMDD_HHMMSS.tar.gz`
+
 ### Secrets Backup (`pull-secrets.sh`)
 - **Method**: rsync with GPG filter (*.gpg files only)
-- **Retention**: 28 days
+- **Retention**: 7 days
 - **Encryption**: GPG symmetric encryption
 - **Output**: `/backup/secrets/.env.YYYYMMDD_HHMMSS.gpg`
+
+### Secondary Location Sync (`sync-to-secondary.sh`)
+- **Method**: rsync mirror to external drive
+- **Target**: `/media/abhinavguru/BACKUPS/GuruColdStorage-Backup/`
+- **Behavior**: Skips gracefully if external drive not mounted
+- **Content**: Full mirror of `/backup/` directory
 
 ## Cron Schedule
 
@@ -59,18 +78,25 @@ A pull-based backup system for the GuruColdStorage Supabase application. The bac
 
 ```
 /backup/
-├── database/          # PostgreSQL dumps (28-day retention)
+├── database/          # PostgreSQL dumps (7-day retention)
 │   └── supabase_backup_YYYYMMDD_HHMMSS.sql.gz
+├── source/            # Source code archives (7-day retention)
+│   ├── supabase_backup_YYYYMMDD_HHMMSS.tar.gz
+│   ├── react-web_backup_YYYYMMDD_HHMMSS.tar.gz
+│   └── react-native_backup_YYYYMMDD_HHMMSS.tar.gz
+├── source-staging/    # Staging area for source sync
 ├── storage/           # File storage mirror (latest snapshot)
 │   └── [supabase storage buckets]
-├── secrets/           # GPG-encrypted .env files (28-day retention)
+├── secrets/           # GPG-encrypted .env files (7-day retention)
 │   └── .env.YYYYMMDD_HHMMSS.gpg
 └── logs/              # All operation logs
     ├── cron.log
     ├── orchestrator.log
     ├── database-pull.log
+    ├── source-pull.log
     ├── storage-pull.log
-    └── secrets-pull.log
+    ├── secrets-pull.log
+    └── secondary-sync.log
 ```
 
 ## Security Features
@@ -148,14 +174,15 @@ du -sh /backup/storage/
 | `/backup/logs/orchestrator.log` | Summary of all backup runs |
 | `/backup/logs/cron.log` | Full output from cron executions |
 | `/backup/logs/database-pull.log` | Database backup details |
+| `/backup/logs/source-pull.log` | Source code backup details |
 | `/backup/logs/storage-pull.log` | File sync details with rsync stats |
 | `/backup/logs/secrets-pull.log` | Secrets sync details |
+| `/backup/logs/secondary-sync.log` | External drive sync details |
 
 ## Known Limitations
 
 1. **Storage has no version history** - Uses rsync `--delete`, so deleted files on primary are deleted from backup
-2. **No automated alerting** - Failures are logged but no email/webhook notifications
-3. **No disk space monitoring** - Backups may fail if disk fills up
+2. **No disk space monitoring** - Backups may fail if disk fills up
 
 ## SSH Configuration
 
