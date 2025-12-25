@@ -9,7 +9,7 @@ PRIMARY_SERVER="primary-server"
 SOURCE_PATH="/home/gcswebserver/ws/GuruColdStorageSupabase/secrets_backup/"
 BACKUP_DIR="/backup/secrets"
 LOG_FILE="/backup/logs/secrets-pull.log"
-RETENTION_DAYS=28
+RETENTION_DAYS=7
 
 # Logging function
 log() {

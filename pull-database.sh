@@ -8,7 +8,7 @@ set -euo pipefail
 PRIMARY_SERVER="primary-server"
 BACKUP_DIR="/backup/database"
 LOG_FILE="/backup/logs/database-pull.log"
-RETENTION_DAYS=28
+RETENTION_DAYS=7
 
 # Timestamp
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)

@@ -50,6 +50,17 @@ else
     FAILED_COMPONENTS="${FAILED_COMPONENTS}Database, "
 fi
 
+# Run source code backup
+log ">>> Running: Source Code Backup"
+if "$SCRIPT_DIR/pull-source.sh"; then
+    log "✓ Source code backup: SUCCESS"
+    ((SUCCESS_COUNT++)) || true
+else
+    log "✗ Source code backup: FAILED"
+    ((FAIL_COUNT++)) || true
+    FAILED_COMPONENTS="${FAILED_COMPONENTS}Source, "
+fi
+
 # Run storage sync
 log ">>> Running: File Storage Sync"
 if "$SCRIPT_DIR/pull-storage.sh"; then
@@ -72,6 +83,14 @@ else
     FAILED_COMPONENTS="${FAILED_COMPONENTS}Secrets, "
 fi
 
+# Sync to secondary location (external drive)
+log ">>> Running: Secondary Location Sync"
+if "$SCRIPT_DIR/sync-to-secondary.sh"; then
+    log "✓ Secondary sync: SUCCESS"
+else
+    log "⚠ Secondary sync: SKIPPED or FAILED (check logs)"
+fi
+
 # Summary
 log "========================================="
 log "=== BACKUP ORCHESTRATOR SUMMARY ==="
@@ -86,6 +105,6 @@ else
     log "========================================="
     # Remove trailing comma and space
     FAILED_COMPONENTS="${FAILED_COMPONENTS%, }"
-    notify_slack "Backup FAILED!\n\n*Failed components:* ${FAILED_COMPONENTS}\n*Successful:* ${SUCCESS_COUNT}/3\n*Failed:* ${FAIL_COUNT}/3\n\nCheck logs: \`/backup/logs/orchestrator.log\`" "failure"
+    notify_slack "Backup FAILED!\n\n*Failed components:* ${FAILED_COMPONENTS}\n*Successful:* ${SUCCESS_COUNT}/4\n*Failed:* ${FAIL_COUNT}/4\n\nCheck logs: \`/backup/logs/orchestrator.log\`" "failure"
     exit 1
 fi
