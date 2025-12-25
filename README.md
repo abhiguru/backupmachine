@@ -191,3 +191,77 @@ ps aux | grep backup-orchestrator
 # If not running, remove stale lock
 rm /tmp/backup-orchestrator.lock
 ```
+
+## Expo Dev Server SSH Tunnel
+
+An SSH tunnel is configured to forward the Expo development server from the VM to the host machine, allowing mobile devices on the local network to connect.
+
+### Architecture
+
+```
+┌─────────────────────┐         SSH Tunnel          ┌─────────────────────┐
+│   MOBILE DEVICE     │ ──────────────────────────► │   HOST MACHINE      │
+│  (192.168.0.x)      │      exp://192.168.0.130    │  (192.168.0.130)    │
+│                     │           :8081              │                     │
+│                     │                              │   Port 8081 ────────┼──┐
+└─────────────────────┘                              └─────────────────────┘  │
+                                                                              │
+                                                     ┌─────────────────────┐  │
+                                                     │   VM (gcswebserver) │  │
+                                                     │  (172.16.194.131)   │◄─┘
+                                                     │                     │
+                                                     │   Expo Dev Server   │
+                                                     │   (localhost:8081)  │
+                                                     └─────────────────────┘
+```
+
+### Configuration
+
+| Component | Details |
+|-----------|---------|
+| Service | `expo-tunnel.service` |
+| SSH Key | `~/.ssh/vm_expo` |
+| Host Port | `0.0.0.0:8081` |
+| VM Target | `localhost:8081` |
+| Auto-reconnect | `autossh` with 30s keepalive |
+
+### Service File
+
+Location: `/etc/systemd/system/expo-tunnel.service`
+
+```ini
+[Unit]
+Description=Expo SSH Tunnel to VM
+After=network.target
+
+[Service]
+User=abhinavguru
+ExecStart=/usr/bin/autossh -M 0 -N -g -L 0.0.0.0:8081:localhost:8081 -i /home/abhinavguru/.ssh/vm_expo -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" -o "StrictHostKeyChecking=accept-new" gcswebserver@172.16.194.131
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Commands
+
+```bash
+# Check tunnel status
+sudo systemctl status expo-tunnel
+
+# Start/Stop/Restart
+sudo systemctl start expo-tunnel
+sudo systemctl stop expo-tunnel
+sudo systemctl restart expo-tunnel
+
+# View logs
+journalctl -u expo-tunnel -f
+
+# Verify port is listening
+ss -tlnp | grep 8081
+```
+
+### Mobile Connection
+
+Connect your mobile device to: `exp://192.168.0.130:8081`
